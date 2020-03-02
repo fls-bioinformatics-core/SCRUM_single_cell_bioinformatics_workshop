@@ -1,0 +1,96 @@
+R version 3.6.1 (2019-07-05)
+Platform: x86_64-conda_cos6-linux-gnu (64-bit)
+Running under: Ubuntu 16.04.6 LTS
+
+Matrix products: default
+BLAS/LAPACK: /home/mqbsxsm2/anaconda3/lib/R/lib/libRblas.so
+
+locale:
+ [1] LC_CTYPE=en_GB.UTF-8       LC_NUMERIC=C              
+ [3] LC_TIME=en_GB.UTF-8        LC_COLLATE=en_GB.UTF-8    
+ [5] LC_MONETARY=en_GB.UTF-8    LC_MESSAGES=en_GB.UTF-8   
+ [7] LC_PAPER=en_GB.UTF-8       LC_NAME=C                 
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C            
+[11] LC_MEASUREMENT=en_GB.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+ [1] grid      parallel  stats4    stats     graphics  grDevices utils    
+ [8] datasets  methods   base     
+
+other attached packages:
+ [1] sSeq_1.22.0                 RColorBrewer_1.1-2         
+ [3] caTools_1.17.1.4            edgeR_3.26.8               
+ [5] limma_3.40.6                cluster_2.1.0              
+ [7] factoextra_1.0.6            ComplexHeatmap_2.0.0       
+ [9] dynamicTreeCut_1.63-1       org.Hs.eg.db_3.8.2         
+[11] AnnotationDbi_1.46.1        biomaRt_2.40.5             
+[13] paletteer_1.0.0             forcats_0.4.0              
+[15] stringr_1.4.0               dplyr_0.8.3                
+[17] purrr_0.3.3                 readr_1.3.1                
+[19] tidyr_1.0.0                 tibble_2.1.3               
+[21] tidyverse_1.3.0             umap_0.2.4.1               
+[23] viridis_0.5.1               viridisLite_0.3.0          
+[25] Rtsne_0.15                  mclust_5.4.5               
+[27] GGally_1.4.0                scran_1.12.1               
+[29] scater_1.12.2               ggplot2_3.2.1              
+[31] SingleCellExperiment_1.6.0  SummarizedExperiment_1.14.1
+[33] DelayedArray_0.10.0         BiocParallel_1.18.1        
+[35] matrixStats_0.55.0          Biobase_2.44.0             
+[37] GenomicRanges_1.36.1        GenomeInfoDb_1.20.0        
+[39] IRanges_2.18.3              S4Vectors_0.22.1           
+[41] BiocGenerics_0.30.0         Seurat_3.1.2               
+
+loaded via a namespace (and not attached):
+  [1] rappdirs_0.3.1           pbdZMQ_0.3-3             R.methodsS3_1.7.1       
+  [4] bit64_0.9-7              irlba_2.3.3              multcomp_1.4-12         
+  [7] R.utils_2.9.2            data.table_1.12.8        RCurl_1.98-1.1          
+ [10] generics_0.0.2           metap_1.2                cowplot_1.0.0           
+ [13] TH.data_1.0-10           RSQLite_2.2.0            RANN_2.6.1              
+ [16] future_1.15.1            bit_1.1-15               mutoss_0.1-12           
+ [19] xml2_1.2.2               lubridate_1.7.4          assertthat_0.2.1        
+ [22] hms_0.5.3                evaluate_0.14            fansi_0.4.1             
+ [25] progress_1.2.2           dbplyr_1.4.2             readxl_1.3.1            
+ [28] igraph_1.2.4.2           DBI_1.1.0                htmlwidgets_1.5.1       
+ [31] reshape_0.8.8            backports_1.1.5          gbRd_0.4-11             
+ [34] RcppParallel_4.4.4       vctrs_0.2.1              ROCR_1.0-7              
+ [37] withr_2.1.2              sctransform_0.2.1        prettyunits_1.1.0       
+ [40] mnormt_1.5-5             ape_5.3                  IRdisplay_0.7.0         
+ [43] lazyeval_0.2.2           crayon_1.3.4             pkgconfig_2.0.3         
+ [46] nlme_3.1-143             vipor_0.4.5              palr_0.1.0              
+ [49] pals_1.6                 rlang_0.4.2              globals_0.12.5          
+ [52] lifecycle_0.1.0          sandwich_2.5-1           modelr_0.1.5            
+ [55] rsvd_1.0.2               dichromat_2.0-0          cellranger_1.1.0        
+ [58] lmtest_0.9-37            Matrix_1.2-18            IRkernel_1.1            
+ [61] zoo_1.8-7                reprex_0.3.0             base64enc_0.1-3         
+ [64] beeswarm_0.2.3           ggridges_0.5.2           GlobalOptions_0.1.1     
+ [67] png_0.1-7                rjson_0.2.20             oompaBase_3.2.9         
+ [70] bitops_1.0-6             getPass_0.2-2            R.oo_1.23.0             
+ [73] KernSmooth_2.23-16       blob_1.2.0               DelayedMatrixStats_1.6.1
+ [76] shape_1.4.4              scales_1.1.0             memoise_1.1.0           
+ [79] magrittr_1.5             plyr_1.8.5               ica_1.0-2               
+ [82] gplots_3.0.1.2           bibtex_0.4.2.2           gdata_2.18.0            
+ [85] zlibbioc_1.30.0          compiler_3.6.1           lsei_1.2-0              
+ [88] dqrng_0.2.1              plotrix_3.7-7            clue_0.3-57             
+ [91] fitdistrplus_1.0-14      cli_2.0.1                XVector_0.24.0          
+ [94] listenv_0.8.0            pbapply_1.4-2            MASS_7.3-51.5           
+ [97] tidyselect_0.2.5         stringi_1.4.5            BiocSingular_1.0.0      
+[100] askpass_1.1              locfit_1.5-9.1           ggrepel_0.8.1           
+[103] tools_3.6.1              future.apply_1.4.0       circlize_0.4.8          
+[106] rstudioapi_0.10          uuid_0.1-2               gridExtra_2.3           
+[109] digest_0.6.23            Rcpp_1.0.3               broom_0.5.3             
+[112] SDMTools_1.1-221.2       RcppAnnoy_0.0.14         httr_1.4.1              
+[115] npsurv_0.4-0             Rdpack_0.11-1            colorspace_1.4-1        
+[118] rvest_0.3.5              XML_3.99-0.3             fs_1.3.1                
+[121] reticulate_1.14          splines_3.6.1            uwot_0.1.5              
+[124] statmod_1.4.33           rematch2_2.1.0           sn_1.5-4                
+[127] multtest_2.40.0          mapproj_1.2.6            plotly_4.9.1            
+[130] jcolors_0.0.4            jsonlite_1.6             zeallot_0.1.0           
+[133] scico_1.1.0              R6_2.4.1                 TFisher_0.2.0           
+[136] pillar_1.4.3             htmltools_0.4.0          glue_1.3.1              
+[139] BiocNeighbors_1.2.0      codetools_0.2-16         maps_3.3.0              
+[142] tsne_0.1-3               mvtnorm_1.0-12           lattice_0.20-38         
+[145] numDeriv_2016.8-1.1      ggbeeswarm_0.6.0         leiden_0.3.1            
+[148] gtools_3.8.1             openssl_1.4.1            survival_3.1-8          
+[151] repr_1.0.2               munsell_0.5.0            GetoptLong_0.1.8        
+[154] GenomeInfoDbData_1.2.1   haven_2.2.0              reshape2_1.4.3          
+[157] gtable_0.3.0            
