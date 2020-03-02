@@ -1,6 +1,6 @@
 # SCRUM Single Cell Bioinformatics Workshop
 __Date:__ Wednesday, 4th March, 2020<br>
-__Time:__ 10am-1pm
+__Time:__ 10am-1pm<br>
 __Venue:__ Michael Smith Lecture Theatre<br>
 __Pre-requisite:__ Basic understsanding of R & Rstudio
 
