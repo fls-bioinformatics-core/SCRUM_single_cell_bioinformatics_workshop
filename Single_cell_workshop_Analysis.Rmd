@@ -1,0 +1,1413 @@
+---
+title: "Single cell workshop with scRNA-seq for ovarian cancer model (subset of cells)"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  html_document:
+    df_print: paged
+    toc: yes
+---
+
+
+
+# Project NEXTSEQ_#154 (Liver development)
+This notebook documents the steps for the aggregated data with no normalisation by Cellranger
+_Researcher:_ Louisa Nelson
+_PI:_ Stephen Taylor
+_Analyst:_ Syed Murtuza Baker
+
+
+## Project Description
+
+These samples are basically an addition to  the one sample in the paper that was analysed previously. They are cells from patients with ovarian cancer, we isolated the tumour and stromal cells for each patient. And have mixed them back together to give 1 sample per patient.
+
+So the only difference from the previous sample is that these have the tumour and stromals from the same patient mixed together in a `75%:25%` ratio
+
+## Background
+High-grade serous ovarian carcinoma is characterised by TP53 mutation and extensive chromosome instability (CIN). Because our understanding of CIN mechanisms is based largely on analysing established cell lines, we developed a workflow for generating ex vivo cultures from patient biopsies to provide models that support interrogation of CIN mechanisms in cells not extensively cultured in vitro. Here, we describe a “living biobank” of ovarian cancer models with extensive replicative capacity, derived from both ascites and solid biopsies.
+
+Details of the project can be found in [Nelson, L. et. al. A living biobank of ovarian cancer ex vivo models reveals profound mitotic heterogeneity. Nat Commun 11, 822 (2020)]( https://doi.org/10.1038/s41467-020-14551-2)
+
+
+## Aim
+The aims were
+
+    1. To cluster them establish the 2 populations
+    2. To establish the over-dispersed genes in the two populations
+
+From the first sample `p53` and `XIST` were differentially expressed so you could use these to validate the initial clustering. The analysis after that would be the same as the previous sample
+
+
+# Data preperation
+The first thing is the load the libraries that we will be using in our downstream analysis
+
+## Loading library
+```{r}
+library(Seurat)
+library(scater)
+library(ggplot2)
+library(scran)
+library(GGally)
+library(mclust)
+library(Rtsne)
+library(viridis)
+#library(umapr)
+library(umap)
+library(tidyverse)
+library(paletteer)
+library(biomaRt)
+library(dynamicTreeCut)
+library(ComplexHeatmap)
+library(cluster)
+library(factoextra)
+library(edgeR)
+```
+
+```{r}
+writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
+sessionInfo()
+```
+
+
+Setting up color palettes. The following code with produce a pie chart with colour configurations.
+
+Setting up colorblind friendly color palette:
+
+```{r}
+#cbPalette <- paletteer_d(package = "ggthemes", palette="calc", n=12)
+ c30 <- c("dodgerblue2",#1
+         "#E31A1C", #2 red
+          "green4", #3
+         "#FF7F00", #4 orange
+           "green1",#5
+         "purple",#6
+         "blue1",#7
+         "deeppink1",#8
+         "darkorange4",#9
+          "black",#10
+         "gold1",#11
+         "darkturquoise",#12
+         "#6A3D9A", #13 purple
+         "orchid1",#14
+         "gray70",#15
+          "maroon",#16
+         "palegreen2",#17
+          "#333333",#18
+          "#CAB2D6", #19 lt purple
+          "#FDBF6F", #20 lt orange
+         "khaki2",#21
+         "skyblue2",#22
+         "steelblue4",#23
+         "green1",#24
+         "yellow4",#25
+         "yellow3",#26
+         "#FB9A99", #27 lt pink
+         "brown",#28
+         "#000099",#29
+         "#CC3300"#30
+         )
+ 
+pie(rep(1,30), col=c30)
+```
+Choosing for the samples
+
+```{r}
+c_sample_col <- c30[c(3,22,19,30)]
+```
+
+Choosing for the clusters
+```{r}
+c_clust_col <- c30[c(1,2,3,4,5,6,7,8,11,14,22,24)]
+```
+
+__ This data set was not normalized using 10X downsampling as the samples have large variability in their cell numbers.__
+
+## Importing cell-ranger data
+```{r}
+cellranger_pipestance_path <- "filtered_feature_bc_matrix_workshop/"
+projectData<- Read10X(cellranger_pipestance_path)
+#analysis_results <- load_cellranger_analysis_results(cellranger_pipestance_path)
+```
+
+
+
+## Extracting cell information
+```{r}
+## Sample information.  EDITS REQUIRED
+
+## One sample
+#Sample1_barcodes  <- data.frame(barcode=colnames(project_data), Sample="Eva_S1")
+
+## Two (or more) samples
+Sample1_barcodes  <- data.frame(barcode=colnames(projectData)[grep("1", colnames(projectData))], Sample="Patient1")
+Sample2_barcodes  <- data.frame(barcode=colnames(projectData)[grep("2", colnames(projectData))], Sample="Patient2")
+Sample3_barcodes  <- data.frame(barcode=colnames(projectData)[grep("3", colnames(projectData))], Sample="Patient3")
+Sample4_barcodes  <- data.frame(barcode=colnames(projectData)[grep("4", colnames(projectData))], Sample="Patient4")
+
+print(paste0('Number of Sample1 cells: ',dim(Sample1_barcodes)[1]))
+print(paste0('Number of Sample2 cells: ',dim(Sample2_barcodes)[1]))
+print(paste0('Number of Sample3 cells: ',dim(Sample3_barcodes)[1]))
+print(paste0('Number of Sample4 cells: ',dim(Sample4_barcodes)[1]))
+```
+
+
+__Confirmed this number with the QC output produced by cell ranger.__
+
+
+```{r}
+#Barcodes 
+#For single sample
+#annotBarcode <- Sample1_barcodes
+#rownames(annotBarcode) <- annotBarcode$barcode
+#head(annotBarcode)
+
+## For multiple samples
+annotBarcode <- rbind(Sample1_barcodes, Sample2_barcodes, Sample3_barcodes, Sample4_barcodes)
+rownames(annotBarcode) <- annotBarcode$barcode
+head(annotBarcode)
+```
+
+### Creating `SingleCellExperiment` object
+
+Creating the `SingleCellExperiment` object using `scater`. We would be using the `exprs` function of `gbm`. Later on scater might add its own function to input 10X data, but before that we will be using this method
+```{r}
+cdSc <- SingleCellExperiment(assays = list(counts = as.matrix(projectData)))
+colData(cdSc)$barcode <- annotBarcode$barcode
+colData(cdSc)$Sample <- annotBarcode$Sample
+rowData(cdSc)$symbol <- rownames(projectData)
+cdSc <- scater::calculateQCMetrics(cdSc)
+```
+```{r}
+cdSc
+```
+
+#### Viewing information related with cells
+We will use `colData()` function to access the metadata related with cells
+
+```{r}
+names(colData(cdSc))
+```
+
+
+#### Viewing QC information related with genes
+We use `rowData()` function to access the metadata related with genes
+```{r}
+names(rowData(cdSc))
+```
+
+
+#### Normalization
+
+Here we use log2-counts-per-million with an offset of 1 as the exprs values. We have to note that the CPM for scater is different than the regular CPM calculation as we are considering the step-size here. 
+
+The value of the log-CPMs is explained by adding a prior count to avoid undefined values after the log-transformation, multiplying by a million, and dividing by the mean library size. This size factors are used to define the effective library sizes. This is done by scaling all size factors such that the mean scaled size factor is equal to the mean sum of counts across all features. The effective library sizes are then used to in the denominator of the CPM calculation. The way that `scater` calculates the log-normalized counts are
+
+```
+lib.sizes <- colSums(counts(example_sceset))
+lib.sizes <- lib.sizes/mean(lib.sizes)
+log2(counts(example_sceset)[1,]/lib.sizes+1)
+```
+We now normalize for all the counts
+```{r}
+exprs(cdSc) <- log2(scater::calculateCPM(cdSc, use_size_factors = TRUE) + 1)
+```
+
+Saving Dataset
+```{r}
+save.image()
+# save.image('PC_20181002.RData')
+```
+
+## QC analysis
+At the start of the QC analysis we make different plots to visualize the summary statistics.
+
+### Cell QC
+Low-quality cells need to be identified and removed to ensure that the technical effects do not distort downstream analysis results. Three common measures of cell quality are:
+
+* The total counts or _library size_ per cell
+* The _number of expressed genes_ in each cell library
+* Proportion of _mitochondrial genes_ in each cell library
+
+
+The _library size_ is defined as the total sum of counts across all genes. Cells with relatively small library sizes are considered to be of low quality as the RNA has not been efficiently captured (i.e., converted into cDNA and amplified) during library preparation.
+
+The _number of expressed genes_ in each cell is defined as the number of genes with non-zero counts for that cell. Any cell with very few expressed genes is likely to be of poor quality as the diverse transcript population has not been successfully captured.
+
+High proportions of reads mapping to _mitochondrial genes_ are indicative of poor-quality cells ([Ilicic et al. 2016](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0888-1); [Islam et al, 2014](https://www.nature.com/articles/nmeth.2772)), possibly because of increased apoptosis and/or loss of cytoplasmic RNA from lysed cells.
+
+
+
+#### Reads mapping with mitochondrial reads
+We identify the rows corresponding to mitochondrial genes.
+
+```{r}
+## Human
+my.ids <- gsub('\\..*','',tolower(rownames(cdSc)))
+ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl", mirror = "useast")
+#ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "useast.ensembl.org")
+chrName <- getBM(attributes=c('ensembl_gene_id','hgnc_symbol','chromosome_name'), filters = 'hgnc_symbol', values =my.ids, mart = ensembl)
+
+is.mito <- chrName$chromosome_name == "MT" & !is.na(chrName$chromosome_name)
+sum(is.mito)
+
+## Mouse
+#is.mito <- grepl("^mt-", rowData(cdSc)$symbol)
+#cdSc <- calculateQCMetrics(cdSc, feature_controls=list(Mt=is.mito))
+#print(paste0('Number of annotated mitochondrial genes = ',as.character(sum(is.mito))))
+
+```
+
+
+```{r}
+cdSc <- calculateQCMetrics(cdSc, feature_controls=list(Mt=is.mito))
+```
+
+Plotting the histograms of my QC entries.
+```{r fitQC_Mt, fig.height=8, fig.width=10}
+par(mfrow=c(2,2))
+hist((cdSc$total_counts)/1e6, xlab="Library sizes (millions)", main="Histogram of Library size",
+     breaks=100, col="grey80", ylab="Number of cells")
+
+hist(cdSc$total_features_by_counts, xlab="Number of expressed genes", main="Histogram of No. of Features",
+     breaks=100, col="grey80", ylab="Number of cells")
+
+hist(cdSc$pct_counts_Mt, xlab="Mitochondrial proportion (%)",
+     ylab="Number of cells", breaks=100, main="Histogram of Mictochondria %", col="grey80")
+```
+
+The summary statistics for mitochondrial read proportion is reasonably good. As anything below 10% is very good and here the mean is around 7%. However, there are some outlier cells expressing very high mitocondrial genes. I am going to filter those genes out.
+
+```{r}
+summary(cdSc$pct_counts_Mt)
+```
+
+__ MITOCHONDRIAL GENES QC NOTES __
+
+* A mean below 10% is very good.
+* A mean above 25% is no good.
+
+
+__MITOCHONDRIAL GENES QC NOTES FOR THIS DATASET__
+
+* The summary statistics for mitochondrial read proportion is very good.
+* However, there are some outlier cells expressing very high mitocondrial genes. These will be filtered out.
+
+It is also valuable to examine how the QC metrics behave with respect to each other. Generally, they will be in rough agreement, i.e., cells with low total counts will also have low numbers of expressed features and high mitochondrial proportions.
+
+```{r}
+par(mfrow=c(1,3))
+plot(cdSc$total_features_by_counts, cdSc$total_counts/1e6, xlab="Number of expressed genes",
+    ylab="Library size (millions)")
+plot(cdSc$total_features_by_counts, cdSc$pct_counts_Mt, xlab="Number of expressed genes",
+    ylab="Mitochondrial proportion (%)")
+plot(cdSc$total_counts/1e6, cdSc$pct_counts_Mt, xlab="Total counts (in millions)",
+    ylab="Mitochondrial proportion (%)")
+
+```
+
+
+```{r}
+plotRowData(cdSc, x = "n_cells_by_counts", y = "log10_total_counts", colour_by = "is_feature_control_Mt")
+```
+__This plot__ shows log10 total counts per gene (y-axis) versus number of cells expressing that gene (x-axis). Generally, in single cell datasets there are some genes with very low, or very high, total counts, which accounts for the S shape of the plot.
+
+
+In the figure above we see that some of the mitochondrial genes (marked in orange) at the top right corner of the figure has very high log10_total_counts and also are expressed in a large number of cells (almost in all cells). This is not very surprising as some of the mitochondrial genes are indeed expressed across all the cells as they are producing energy. The worrying part would be if these genes takes majority of a cell's read (more than 80%). Then I would remove those cells.
+
+```{r}
+plotRowData(cdSc, x = "n_cells_by_counts", y = "log10_total_counts", colour_by = "pct_dropout_by_counts")
+```
+
+__Dropouts__ is a term for genes with no read counts. As expected, cells with low number of reads have higher dropout counts.
+
+```{r}
+plotColData(cdSc, x = "log10_total_counts", y = "log10_total_features_by_counts", colour_by = "pct_counts_Mt")
+```
+Cells on the linear pattern show a good correlation between total counts and the number of gene features with counts. Problematic cells deviate from the linear trend.
+
+Again cells with lower read counts and lower total feature counts have very high proportion of mitchondrial reads, clearly indicating that these cells either started apoptosis or broken abruptly. We can safely remove these cells in our QC filtering. 
+
+
+```{r}
+plotColData(cdSc, x = "log10_total_features_by_counts", y="log10_total_counts", size_by ="total_counts_Mt", colour_by  = "pct_counts_Mt")
+```
+
+The following figure gives an idea of how many genes are expressed in how many cells.
+
+```{r}
+plotExprsFreqVsMean(cdSc)
+```
+# 3. Quality filtering of cells
+
+__Picking thresholds for filtering out poor cells__ is not straightforward for different metrics as their absolute values depend on the protocol and biological system. For example, sequencing to greater depth will lead to more reads, regardless of the quality of the cells. To obtain an adaptive threshold, the assumption made here is that most of the dataset consists of high-quality cells. Plots to facilitate picking thresholds for cell cutoffs are below.
+
+```{r}
+cut_off_reads <- median(cdSc$log10_total_counts) - 3*mad(cdSc$log10_total_counts)
+df <- data.frame(x=cdSc$log10_total_counts, Sample = cdSc$Sample)
+plot_reads <- ggplot(df,
+       aes(x = x, fill = as.factor(Sample))) + 
+       geom_density(alpha = 0.5) +
+       geom_vline(xintercept = cut_off_reads, colour="grey", linetype = "longdash") +
+       labs(x = expression('log'[10]*'(Library Size)'), title = "Total reads density", fill = "Sample") + 
+       theme_classic(base_size = 14)+
+       scale_fill_manual(values=c_sample_col)
+
+
+cut_off_mRNA <- median(cdSc$log10_total_features_by_counts) - 3*mad(cdSc$log10_total_features_by_counts)
+df <- data.frame(x=cdSc$log10_total_features_by_counts, Sample = cdSc$Sample)
+plot_mRNA <- ggplot(df,
+       aes(x = x, fill = as.factor(Sample))) + 
+       geom_density(alpha = 0.5) +
+       geom_vline(xintercept = cut_off_mRNA, colour="grey", linetype = "longdash") +
+       labs(x = expression('log'[10]*'(Number of expressed genes)'), title = "Total genes expressed", fill = "Sample") + 
+       theme_classic(base_size = 14)+
+       scale_fill_manual(values=c_sample_col)
+
+
+cut_off_MT <- median(cdSc$pct_counts_Mt) + 3*mad(cdSc$pct_counts_Mt)
+df <- data.frame(x=cdSc$pct_counts_Mt, Sample = cdSc$Sample)
+plot_MT <- ggplot(df,
+       aes(x = x, fill = as.factor(Sample))) + 
+       geom_density(alpha = 0.5) +
+       geom_vline(xintercept = cut_off_MT, colour="grey", linetype = "longdash") +
+       labs(x = expression('Pct of MT Expression'), title = "Mitochondrial Expression", fill = "Sample") + 
+       theme_classic(base_size = 14)+
+       scale_fill_manual(values=c_sample_col)
+
+```
+
+```{r figDist, fig.height = 8, fig.width = 9}
+multiplot(plot_reads, plot_MT, plot_mRNA,  cols=2)
+```
+
+```{r figIndDist, fig.height = 8, fig.width = 9}
+df <- data.frame(x=cdSc$log10_total_counts)
+as_tibble(df) %>%
+  dplyr::mutate("Sample" = cdSc$Sample) %>%
+  ggplot( aes(x = x, fill = as.factor(Sample))) + 
+       geom_density(alpha = 0.5) +
+       geom_vline(xintercept = cut_off_reads, colour="grey", linetype = "longdash") +
+       labs(x = expression('log'[10]*'(Library Size)'), title = "Total reads density", fill = "Sample") + 
+       theme_classic(base_size = 14)+
+       scale_fill_manual(values=c_sample_col) + facet_wrap(~Sample, nrow=2,ncol=2)
+```
+
+__The distribution of the reads, number of expressed genes and the percent of MT expression.__
+
+The dotted line represents the threshold which is the 3 Median Absolute Deviation (MAD). For the top two figures, cells on the left of this threshold would be filtered out and for the bottom figure, cells on the right of this figure would be filtered out.
+
+Cells are removed with log-library sizes that are more than 3 median absolute deviations (MADs) below the median log-library size. (A log-transformation improves resolution at small values, especially when the MAD of the raw values is comparable to or greater than the median).
+
+Similarly cells are removed where the log-transformed number of expressed genes is 3 MADs below the median.
+
+Finally, cells are removed having pct of MT expression below 3 MAD.
+
+```{r}
+print(paste0('Read count Cutoff: ',10^cut_off_reads))
+print(paste0('Genes count Cutoff: ',10^cut_off_mRNA))
+print(paste0('MT percent count Cutoff: ',cut_off_MT))
+```
+
+
+
+We now calculate the cells and genes that are deemed to be outliers due to falling below 3 MAD.
+
+Cells having read counts below 1325 (ByLibSize) and number of genes expressed below 884 (ByFeature) would be dropped and if cells are having more than 0.12% of mitochondrial reads, I would drop the cells.
+
+```{r}
+libsize.drop <- isOutlier(cdSc$total_counts, nmads=3, type="lower", log=TRUE)
+feature.drop <- isOutlier(cdSc$total_features_by_counts, nmads=3, type="lower", log=TRUE)
+mito.drop <- isOutlier(cdSc$pct_counts_Mt, nmads=3, type="higher")
+```
+
+Below are the stats for the cells that would be dropped
+```{r}
+data.frame(ByLibSize=sum(libsize.drop), ByFeature=sum(feature.drop), 
+           ByMito=sum(mito.drop))
+```
+
+So, based on library size, 825 cells would be dropped and based on number of features expressed, 1210 cells would be dropped and for Mitochondrial proportion of reads 517 cells would be dropped. Please note that all these cells are removed from the total population and also many of these cells would be overlapping across conditions.
+
+
+Generating, the `scater` object with filtered profile.
+```{r}
+cdScFilt <- cdSc[,!(libsize.drop | feature.drop | mito.drop)]
+cdScFilt <- calculateQCMetrics(cdScFilt)
+```
+
+
+Before filtering number of cells were,
+```{r}
+print(paste0("Cells before filtering: ",dim(cdSc)[2]))
+```
+
+
+
+After filtering remaining cells are:
+```{r}
+print(paste0("Cells remaining after filtering: ",dim(cdScFilt)[2]))
+```
+
+For the four samples, number of cells that are remaining are:
+```{r}
+print(levels(as.factor(colData(cdSc)$Sample)))
+print(paste0('Before Filtering: ', table(colData(cdSc)$Sample)))
+print(paste0('After Filtering: ', table(colData(cdScFilt)$Sample)))
+```
+
+So, the cells that are being filtered out are kind of evenly distributed across the samples. This is kind of reassuring that there was not a point failure where one sample totally failed. After filtering we have in total 1828 cells remaining for downstream analysis which is a very reasonable number.
+
+__QC plots__ below to check result and decide whether further filtering is required.
+
+Relationship between total counts and total features before filtering:
+```{r}
+p <- plotColData(cdSc, x="log10_total_counts",y="total_features_by_counts", colour_by = "Sample") +
+       scale_fill_manual(values=c_sample_col)
+p
+```
+
+After filtering:
+```{r}
+p <- p <- plotColData(cdScFilt, x="log10_total_counts",y="total_features_by_counts", colour_by = "Sample") +
+       scale_fill_manual(values=c_sample_col)
+p
+```
+We could see that some of the outlier cells have been dropped.
+
+Before filtering:
+```{r}
+plotColData(cdSc, x = "log10_total_counts", y = "log10_total_features_by_counts", colour_by = "pct_counts_Mt")
+```
+
+After filtering:
+```{r}
+plotColData(cdScFilt, x = "log10_total_counts", y = "log10_total_features_by_counts", colour_by = "pct_counts_Mt")
+```
+We see that the good cells are kept while cells with very high Mt reads are being removed.
+
+__Violin plots__ below to investigate possible outlier cells with high read-depth (could be doublets).
+
+```{r figViolin, fig.height=9, fig.width = 9}
+df <- data.frame(Cell=colnames(cdScFilt), CellType=cdScFilt$Sample, totalFeatures=cdScFilt$total_features_by_counts, totalCount=cdScFilt$total_counts, PctTotalCountMt=cdScFilt$pct_counts_Mt, Sample=cdScFilt$Sample)
+p1 <- ggplot(df, aes(factor(CellType),totalCount,colour=Sample))
+p1 <- p1 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+p2 <- ggplot(df, aes(factor(CellType),PctTotalCountMt,colour=Sample))
+p2 <- p2 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+p3 <- ggplot(df, aes(factor(CellType),totalFeatures,colour=Sample))
+p3 <- p3 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+
+multiplot(p1,p2,p3,cols = 2)
+```
+It clearly looks like that two cells above total counts of 30000 are outliers. This again would be removed as it would otherwise might be multiplets
+
+```{r}
+cdScFilt
+```
+<font color=red>Manual cutoff selection required in the next step. Careful this changes cdsFilt permanently. make a temp file if unsure</font>
+
+```{r}
+cdScFilt <- cdScFilt[,!(cdScFilt$total_counts > 20000)]
+```
+
+```{r}
+cdScFilt
+```
+
+Drawing the vuiolin plot again
+
+```{r figViolin_v2, fig.height=9, fig.width = 9}
+df <- data.frame(Cell=colnames(cdScFilt), CellType=cdScFilt$Sample, totalFeatures=cdScFilt$total_features_by_counts, totalCount=cdScFilt$total_counts, PctTotalCountMt=cdScFilt$pct_counts_Mt, Sample=cdScFilt$Sample)
+p1 <- ggplot(df, aes(factor(CellType),totalCount,colour=Sample))
+p1 <- p1 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+p2 <- ggplot(df, aes(factor(CellType),PctTotalCountMt,colour=Sample))
+p2 <- p2 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+p3 <- ggplot(df, aes(factor(CellType),totalFeatures,colour=Sample))
+p3 <- p3 + geom_violin() + geom_jitter(height = 0, width = 0.1) + theme_classic(base_size = 14) + scale_colour_manual(values=c_sample_col) +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+
+
+multiplot(p1,p2,p3,cols = 2)
+```
+Looks a good distribution to move forward.
+
+```{r}
+save.image()
+```
+
+
+# 4. Classification of cell cycle phase
+
+The prediction method used here is described by [Scialdone et al. (2015)](http://www.sciencedirect.com/science/article/pii/S1046202315300098) to classify cells into cell cycle phases based on the gene expression data. Using a training dataset, the sign of the difference in expression between two genes was computed for each pair of genes. Pairs with changes in the sign across cell cycle phases were chosen as markers. Cells in a test dataset can then be classified into the appropriate phase, based on whether the observed sign for each marker pair is consistent with one phase or another. We do the cell cycle classification before gene filtering as this provides more precise cell cycle phase classifications. This approach is implemented in the Cyclone function using a pre-trained set of marker pairs for human data. Some additional work is necessary to match the gene symbols in the data to the Ensembl annotation in the pre-trained marker set.
+
+```{r}
+cdScFiltAnnot <- cdScFilt
+```
+
+```{r}
+hg.pairs <- readRDS(system.file("exdata", "human_cycle_markers.rds", package="scran"))
+library(org.Hs.eg.db)
+anno <- select(org.Hs.eg.db, keys=as.character(rownames(cdScFiltAnnot)), keytype="SYMBOL", column="ENSEMBL")
+ensembl <- anno$ENSEMBL[match(as.character(rownames(cdScFiltAnnot)), anno$SYMBOL)]
+assignments <- cyclone(cdScFiltAnnot, hg.pairs, gene.names=ensembl)
+```
+
+```{r}
+df <- data.frame(x=assignments$score$G1, y=assignments$score$G2M, Sample=colData(cdScFilt)$Sample)
+ p<-ggplot(data=df, aes(x=x,y=y,color=Sample)) + 
+    geom_point(size=0.5)+
+    xlab("G1 score")+
+    ylab("G2M score")+
+    ylim(0,1)+
+    xlim(0,1)+
+    ggtitle("Cell-cycle effects")+
+    theme_light(base_size=15)+
+    theme(axis.title.x = element_text(size=10, vjust=-2),
+          axis.text.x  = element_text( size=10),
+          axis.title.y = element_text( size=10,vjust=2),
+          axis.text.y  = element_text( size=10)) +
+    theme(plot.margin=unit(c(1,1,1.5,1.2),"cm"))+
+    theme(legend.text=element_text(size=10),#size of legend
+          legend.title=element_text(size=10), 
+          plot.title = element_text(size=20, face="bold")) +
+    scale_colour_manual(values=c_sample_col) + 
+    #scale_color_discrete(name=legend.title)+
+    geom_segment(aes(x = 1/2, y = 0, xend=1/2, yend=1/2),colour="black") + 
+    geom_segment(aes(x = 0, y = 1/2, xend=1/2, yend=1/2),colour="black") +
+    geom_segment(aes(x = 1/2, y = 1/2, xend=1, yend=1),colour="black") +
+    annotate("text", x=0.05, y=0.05, label="S", size=8)+
+    annotate("text", x=0.95, y=0.25, label="G1", size=8)+
+    annotate("text", x=0.25, y=0.95, label="G2M", size=8)
+print(p)
+smoothScatter(assignments$score$G1, assignments$score$G2M, xlab="G1 score", ylab="G2/M score", pch=16, cex=0.6)
+```
+
+__Background Cell Cycle Analysis__
+- Cells are classified as being in G1 phase (not in cell division aka cell cycle) if their G1 score is above 0.5 and greater than the G2/M score.
+- Cells are classified as being in S phase (synthesis of DNA, replication) if neither score is above 0.5.
+- Cells are classified as being in G2/M phase (gap between DNA synthesis and mitosis) if their G2/M score is above 0.5 and greater than the G1 score.
+ 
+The cell-cycle status of cells can be a significant confounding factor in some datasets i.e. clusters forming on the basis of cell cycle status instead of other biological factors of interest. The goal at this stage is only to assess the cell cycle status of cells not to try normalise it away.
+
+This method would be less accurate for data that are substantially different from those used in the training set, e.g., due to the use of a different protocol. This dataset uses UMI counts, which has an entirely different set of biases, e.g., 3’-end coverage only, no length bias, no amplification noise. These new biases (and the absence of expected biases) may interfere with accurate classification of some cells. So there is some uncertainty with this analysis. 
+
+Nevertheless we need to keep in mind that there could be quite high cell-cycle effect which might confound the dataset. To avoid problems from misclassification, no processing of this dataset by cell cycle phase will be done here.
+
+__This Dataset's Cell Cycle result__
+It looks like majority of the cells have a high __G2/M__ or __S__ score indicating that the cells are __somewhat__ going through cell-cycle stages. Generally if they are on G1 stage, then they are not in cell-cycle stage and if on G2/M then they are cell-cycle stages. But here they are in S, which is the synthesis phase indicating DNA is being replicated.
+
+
+```{r}
+colData(cdScFilt)$CellCycle <- assignments$phases
+colData(cdScFiltAnnot)$CellCycle <- assignments$phases
+plotPCA(cdScFiltAnnot, colour_by = "CellCycle", shape_by="Sample")
+```
+
+It does not look like one patient is dominated by a cell-cycle phase. 
+
+# 5. Filtering out low-abundance genes<a name='section5' />
+
+The goal is to keep genes that will be good features to discriminate the cells. 
+
+Low-abundance genes are problematic as zero or near-zero counts do not contain enough information for reliable statistical inference ([Bourgon et al., 2010](http://www.pnas.org/content/107/21/9546)). In addition, the discreteness of the counts may interfere with downstream statistical procedures, e.g., by compromising the accuracy of continuous approximations. 
+
+The more low frequency, low expression genes the more noise. 
+
+These genes are likely to be dominated by drop-out events ([Brennecke et al., 2013](https://www.nature.com/articles/nmeth.2645)), which limits their usefulness in later analyses. Removal of these genes improves discreteness and reduces the amount of computational work without major loss of information.
+
+Generally in scRNA-seq low-abundance genes are defined as those with an average count below a filter threshold of 1. But 10X Chromium is based on UMI counts, which are lower but better quality counts, so setting the threshold to 1 would filter a large number of cells unfairly. 
+
+<font color=red>In the analysis below we go through an iterative process using the figure below, starting with 0.01 to assess what cutoff to use.
+To check whether the chosen threshold is suitable, we examine the distribution of log-means across all genes (Figure below). Generally for higher number of cells there is a peak on the right hand side that represents the bulk of moderately expressed genes while in the middle there is a rectangular component that corresponds to lowly expressed genes. The filter threshold should cut the distribution at some point along the rectangular component to remove the majority of low-abundance genes. As the blue line repsresents in the figure below, it cuts the counts at the rectangular component. Generally 9,000 - 14,000 genes is good (mouse) and 7,500-14,000 for human.
+</font>
+
+
+```{r}
+ave.counts <- rowMeans(counts(cdScFilt))
+keepA <- ave.counts >= 0.01
+keepB <- ave.counts >= 0.02
+print(paste0('Log10 av count >=0.01 leaves ',as.character(sum(keepA)), ' genes '))
+print(paste0('Log10 av count >=0.02 leaves ',as.character(sum(keepB)), ' genes '))
+```
+
+```{r}
+# plot of both cut offs
+hist(log10(ave.counts), breaks=100, main="", col="grey80",
+     xlab=expression(Log[10]~"average count"))
+abline(v=log10(0.02), col="blue", lwd=2, lty=2)
+text(log10(0.035),1000, "0.02")
+abline(v=log10(0.01), col="blue", lwd=2, lty=2)
+text(log10(0.006), 1000, "0.01")
+```
+
+
+After filtering with average count of 0.01 there are 13194 genes left for the downsteram analysis. 
+
+To check whether the chosen threshold is suitable, we examine the distribution of log-means across all genes (Figure below). Generally for higher number of cells there is a peak on the right hand side that represents the bulk of moderately expressed genes while in the middle there is a rectangular component that corresponds to lowly expressed genes. The filter threshold should cut the distribution at some point along the rectangular component to remove the majority of low-abundance genes. As the blue line repsresents in the figure below, it cuts the counts at the rectangular component.
+
+
+We will look at the identities of the most highly expressed genes before filtering them. This should generally be dominated by constitutively expressed transcripts, such as those for ribosomal or mitochondrial proteins. The presence of other classes of features may be cause for concern if they are not consistent with expected biology. For example, the absence of ribosomal proteins and/or the presence of their pseudogenes are indicative of suboptimal alignment.
+
+```{r}
+plotHighestExprs(cdScFiltAnnot)
+```
+
+```{r}
+pdf('Highest_expression_50Gene.pdf')
+plotHighestExprs(cdScFiltAnnot)
+dev.off()
+```
+__Check identities of the most highly expressed genes before filtering them__. This should generally be dominated by constitutively expressed transcripts, such as those for ribosomal or mitochondrial proteins. The presence of other classes of features may be cause for concern if they are not consistent with expected biology. For example, the absence of ribosomal proteins and/or the presence of their pseudogenes are indicative of suboptimal alignment.
+
+Plot shows percentage of total counts (per cell) assigned to the top 50 most highly-abundant features in the dataset.
+
+For each feature, each bar represents the percentage assigned to that feature for a cell, while the circle represents the average across all cells. Bars are coloured by the total number of expressed features in each cell, while circles are coloured according to whether the feature is labelled as a control feature.
+
+<font color=red>__Do the topmost genes appear to agree with the biology?__</font>
+
+<font color=red>__NOTE permanent change to cdScFiltAnnot next!__</font>
+
+This mean-based filter tends to be less aggressive. A gene will be retained as long as it has sufficient expression in any subset of cells. Genes expressed in fewer cells require higher levels of expression in those cells to be retained, but this is not undesirable as it avoids selecting uninformative genes (with low expression in few cells) that contribute little to downstream analyses, e.g., HVG detection or clustering. In contrast, the “at least n” filter depends heavily on the choice of n. With n = 10, a gene expressed in a subset of 9 cells would be filtered out, regardless of the level of expression in those cells. This may result in the failure to detect rare subpopulations that are present at frequencies below n. While the mean-based filter will retain more outlier-driven genes, this can be handled by choosing methods that are robust to outliers in the downstream analyses.
+Thus, we apply the mean-based filter to the data by subsetting the SCESet object as shown below. 
+
+```{r}
+ave.counts <- rowMeans(counts(cdScFilt))
+keep <- ave.counts >= 0.01
+print(paste0('Log10 av count adjustment now leaves ',as.character(sum(keep)), ' genes '))
+#sum(keep)
+```
+
+```{r}
+cdScFilt <- cdScFilt[keep,]
+cdScFiltAnnot <- cdScFilt
+#cdScFiltAnnot <- calculateQCMetrics(cdScFiltAnnot)
+```
+```{r}
+cdScFiltAnnot
+```
+
+The filtering now lets see how the total counts and features plots:
+```{r}
+p <- plotColData(cdScFilt, x="log10_total_counts",y="total_features_by_counts", colour_by = "Sample")  + scale_fill_manual(values=c_sample_col) 
+p
+```
+
+What is the frequency of the cells with mean expression?:
+```{r}
+plotExprsFreqVsMean(cdScFiltAnnot)
+```
+
+__Frequency of the cells versus mean expression.__ Preferably at least 1000 genes will be expressed in 50% of the cells. These uniformly expressed genes are not helpful in disciminating cells, but if the number of genes expressed in >50% is low, that means the dataset quality is not great because too many dropouts. 
+
+```{r}
+save.image()
+```
+
+
+__So things look fine in QC.__
+
+# 6. Normalization of read counts<a name='section6' />
+Single cell RNA-seq data requires different normalisation to bulk data methods (e.g. DESeq2) because scRNA-seq is very sparse. Here the deconvolution based method will be used.
+
+__Further detail on the deconvolution method to deal with zero counts:__ 
+Read counts are subject to differences in capture efficiency and sequencing depth between cells ([Stegle et al., 2015](https://www.nature.com/articles/nrg3833)). Normalization is required to eliminate these cell-specific biases prior to downstream quantitative analyses. In bulk data this is often done by assuming that most genes are not differentially expressed (DE) between cells. Any systematic difference in count size across the non-DE majority of genes between two cells is assumed to represent bias and is removed by scaling. More specifically, “size factors” are calculated that represent the extent to which counts should be scaled in each library. Single-cell data can be problematic due to the dominance of low and zero counts. To overcome this, counts from many cells are pooled to increase the count size for accurate size factor estimation ([Lun et al., 2016](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0947-7)). Pool-based size factors are then “deconvolved” into cell-based factors for cell-specific normalization.
+
+```{r}
+cdScFiltAnnot <- computeSumFactors(cdScFiltAnnot, sizes=c(10, 50, 100, 150))
+summary(sizeFactors(cdScFiltAnnot))
+```
+
+If the size factors are tightly correlated with the library sizes for all cells this would suggests that the systematic differences between cells are primarily driven by differences in capture efficiency or sequencing depth. Any DE between cells would yield a non-linear trend between the total count and size factor, and/or increased scatter around the trend.
+
+<font color=red>If there is an error "estimated negative size factor", then the sizes has to be adjusted__</font>
+
+```{r}
+DF <- data.frame(VAR1=sizeFactors(cdScFiltAnnot), VAR2=cdScFiltAnnot$total_counts/1e6)
+model = lm(VAR2 ~ VAR1, DF)
+summary(model)
+```
+```{r}
+sp = ggplot(DF, aes(x=VAR1, y=VAR2))
+sp + geom_point() + stat_smooth(method=lm) + theme_light(base_size=15) +
+        theme(strip.background = element_blank(),
+              panel.border     = element_blank(),
+              plot.title = element_text(hjust = 0.5)) +  
+              xlab("Size Factor") + 
+              ylab("Library Size (millions)")+
+              annotate("text", label="R^2=0.90", x=2.8, y=0.025)
+```
+If the size factors are tightly correlated with the library sizes for all cells this would suggests that the systematic differences between cells are primarily driven by differences in capture efficiency or sequencing depth. Any DE between cells would yield a non-linear trend between the total count and size factor, and/or increased scatter around the trend.
+
+With a high R^2 value, the size factors are very tightly correlated with the library size. I calculate the size factor normization and put it in a slot of `SummarizedExperiment` object.
+
+
+__Applying the size factors to normalize gene expression:__
+
+The count data are used to compute normalized log-expression values for use in downstream analyses. Each value is defined as the log-ratio of each count to the size factor for the corresponding cell, after adding a prior count of 1 to avoid undefined values at zero counts. Division by the size factor ensures that any cell-specific biases are removed. If spike-in-specific size factors are present in sce, they will be automatically applied to normalize the spike-in transcripts separately from the endogenous genes.
+
+### Re-calculate the CPM normalization using size factors
+
+Recalculate the `counts-per-million` for these cells. This is because large number of genes have been filtered out which would have impacted the library size when CPM was calcualted with unfiltered data. Now, as the number of genes have been reduced, so is the library size. 
+
+```{r}
+# cpm(cdScFiltAnnot) <- log2(calculateCPM(cdScFiltAnnot, use_size_factors = TRUE) + 1)
+exprs(cdScFiltAnnot) <- log2(calculateCPM(cdScFiltAnnot, use_size_factors = TRUE) + 1)
+```
+
+Setting the parameter `use.size.factors = TRUE` enables the use of step sizes calculated in the above pool based method.
+
+The log-transformation provides some measure of variance stabilization ([Law et al., 2014](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4053721/)), so that high-abundance genes with large variances do not dominate downstream analyses. The computed values are stored as an exprs matrix in addition to the other assay elements.
+
+
+## Checking for important technical factors
+
+We check whether there are technical factors that contribute substantially to the heterogeneity of gene expression. If so, the factor may need to be regressed out to ensure that it does not inflate the variances or introduce spurious correlations. For this dataset, the simple experimental design means that there are no plate or batch effects to examine. However there could be other technical factors like the cell-cycle effect or dropouts.
+
+Before normalization.
+```{r}
+plotExplanatoryVariables(cdScFiltAnnot, exprs_values = "counts", variables=c("total_features_by_counts", "total_counts", "CellCycle", "pct_counts_Mt", "Sample"))
+```
+
+
+After normalization
+```{r}
+plotExplanatoryVariables(cdScFiltAnnot, variables=c("total_features_by_counts", "total_counts", "CellCycle", "pct_counts_Mt", "Sample"))
+```
+
+__Assessing this plot.__ 
+Typically the number of total features (genes) and total counts explain the major variability in scRNA-seq datasets. This indicates that cells vary significantly based on number of genes that they are expressing. 
+
+Number of total features explaining majority of the variability is a common issue in single-cell RNA-seq. This could be due to the sparsity of the data. The PCA plot might be separating cells just because they have very different number of features expressed in total.
+
+However, this would not confound the t-SNE plot which would take the non-linear relationship between the variables. As long as the peaks for _total_counts_ and _total_feature_by_counts_ are below 10 this is normal.
+
+In the cell-cycle plot shown earlier and this plot help establish the importance of the cell-cycle effect.
+
+# 7. Identifying genes for feature selection (HVG)<a name='section7' />
+
+The goal is to identify genes that will be good features to discriminate the cells. In this step, the dataset is filtered to keep only genes that are “informative” of the variability in the data. Highly Variable Genes (HVG) are the ones driving heterogeneity across the population of cells. 
+
+__Detail__ HVG identification requires estimation of the variance in expression for each gene, followed by decomposition of the variance into biological and technical components. HVGs are then identified as those genes with the largest biological components. This avoids prioritizing genes that are highly variable due to technical factors, such as sampling noise during RNA capture and library preparation.
+
+In the recent implementation of `seurat`, Rahul Satija took a slightly different approach for HVG calculation. They calculate the variance and mean for each gene in the dataset (storing this in `object@hvg.info`), and sorts genes by their variance/mean ratio (VMR). They have observed that for large-cell datasets with unique molecular identifiers, selecting highly variable genes (HVG) simply based on VMR is an efficient and robust strategy. 
+
+But in the implementation used here a trend is fitted to the variance estimates of the endogenous genes, using the `use.spikes=FALSE` setting as shown below. This assumes that the majority of genes are not variably expressed, such that the technical component dominates the total variance for those genes. The fitted value of the trend is then used as an estimate of the technical component. 
+
+__span:__ Low-abundance genes with mean log-expression below `min.mean` are not used in trend fitting, to preserve the sensitivity of span-based smoothers at moderate-to-high abundances. It also protects against discreteness, which can interfere with estimation of the variability of the variance estimates and accurate scaling of the trend. The default threshold is chosen based on the point at which discreteness is observed in variance estimates from Poisson-distributed counts. For heterogeneous droplet data, a lower threshold of 0.001-0.01 should be used.
+
+
+```{r}
+var.fit <- trendVar(cdScFiltAnnot, method="loess", use.spikes=FALSE, min.mean=1.0)
+var.out <- decomposeVar(cdScFiltAnnot, var.fit)
+var.out
+```
+
+We assess the suitability of the trend fitted to the endogenous variances by examining whether it is consistent with the variances. The trend passes through or close to most of the endogenous gene variances, indicating that our assumption (that most genes have low levels of biological variability) is valid. This strategy exploits the large number of endogenous genes to obtain a stable trend. 
+
+```{r}
+plot(var.out$mean, var.out$total, pch=16, cex=0.6, xlab="Mean log-expression", ylab="Variance of log-expression")
+o <- order(var.out$mean)
+lines(var.out$mean[o], var.out$tech[o], col="dodgerblue", lwd=2)
+```
+Ideally the plot above would look like the mountain, where it would have rise in the middle but then drop off at the end (low variance for highly expressed genes). The trend line would follow it as well. 
+
+HVG are defined as genes with biological components that are significantly greater than zero at a false discovery rate (FDR) of 5%. These genes are interesting as they drive differences in the expression profiles between cells, and should be prioritized for further investigation. Here a gene is considered to be a HVG if it has a biological component greater than or equal to 0.5. For transformed expression values on the log2 scale, this means that the average difference in true expression between any two cells will be at least 2-fold. (This reasoning assumes that the true log-expression values are Normally distributed with variance of 0.5. The root-mean-square of the difference between two values is treated as the average log2-fold change between cells and is equal to unity.) The results are ranked by the biological component to focus on genes with larger biological variability. HVG can number anywhere between 200-5000 depending on the complexity of the dataset and depth of sequencing https://www.embopress.org/doi/10.15252/msb.20188746
+
+
+```{r}
+hvg.out <- var.out[which(var.out$FDR <= 0.05 & var.out$bio >= 0.5),]
+hvg.out <- hvg.out[order(hvg.out$bio, decreasing=TRUE),]
+print(paste0('Number of HVG using this setting is ' ,as.character(nrow(hvg.out))))
+```
+
+```{r}
+head(rownames(hvg.out),20)
+```
+
+
+Plotting the HVGs. The red dots are the HVGs we selected. 
+
+```{r}
+plot(var.out$mean, var.out$total, pch=16, cex=0.6, xlab="Mean log-expression",
+     ylab="Variance of log-expression")
+o <- order(var.out$mean)
+lines(var.out$mean[o], var.out$tech[o], col="dodgerblue", lwd=2)
+points(var.out[rownames(hvg.out),]$mean, var.out[rownames(hvg.out),]$total, col="red", pch=16, cex=0.6)
+```
+
+Plotting the top 15 HVGs:
+```{r figExp, fig.width=9}
+plotExpression(cdScFiltAnnot, rownames(hvg.out)[1:15])
+```
+
+__Discuss meaning of genes.__
+
+
+```{r}
+write.table(file="HVG.csv", hvg.out, sep="\t", quote = FALSE, col.names = NA)
+head(hvg.out, 20)
+```
+
+__Final Notes__ There are alternative approaches for determining the HVG, sspecially those based on Coefficient of Variance. The method used here, the variance of the log-expression values, avoids genes with strong expression in only one or two cells. This ensures that the set of top HVGs is not dominated by genes with (mostly uninteresting) outlier expression patterns.
+
+However, it has been mentioned that fitting the trendline to endogenous genes might not always be a good idea.
+
+# 8. Analysis of the dataset using highly variable genes HVG<a name='section8' />
+    1. PCA
+    2. t-SNE
+    3. UMAP
+
+```{r multiPCAHVG, fig.height=10, fig.width=12}
+rowVarsSorted <- exprs(cdScFiltAnnot)[rownames(hvg.out),]
+FinalPCAData <- t(rowVarsSorted)
+pcaPRComp <- prcomp(FinalPCAData)
+nmax = 10
+if(dim(pcaPRComp$x)[1] < 10){ nmax = dim(pcaPRComp$x)[1] }
+txt1 <- paste("Percent_PC_Var_onfirst",nmax,"PCs",sep="")
+pca_var = pcaPRComp$sdev ^ 2
+pca_var_percent <- 100 * pca_var / sum(pca_var)
+pca_var_percent_first10 <- NA * pca_var
+pca_var_percent_first10[1:nmax] <- 100 * pca_var[1:nmax] / sum(pca_var[1:nmax])
+
+#pca_corr_reads <- apply(pcaPRComp$x,2,function(x) cor(x,report_sub$Assigned))
+    
+pca_var_out <- data.frame(round(pca_var,3),round(pca_var_percent,1),
+                          round(pca_var_percent_first10,1))
+#rownames(pca_var_out) <- rownames(pcaPRComp$x)
+colnames(pca_var_out) <- c("PC_Var","PC_Var_percent",txt1)
+nColToDisplay = 5
+df <- as.data.frame(pcaPRComp$x)
+df$Cell=as.factor(colData(cdScFiltAnnot)$Sample)
+p <- ggpairs(df, columns=1:nColToDisplay, upper=list(continuous="points"), 
+             title='Plotting first four PCAs', 
+             mapping = aes_string(color="Cell"),
+             legend = c(1,nColToDisplay),
+             columnLabels = as.character(paste0(colnames(df[,1:nColToDisplay]), ' : ', 
+                                                pca_var_out$PC_Var_percent[1:nColToDisplay], '% variance')))+
+    theme_light(base_size=15)+     
+    theme(plot.title = element_text(hjust = 0.5))
+
+for(i in 1:p$nrow) {
+  for(j in 1:p$ncol){
+    p[i,j] <- p[i,j] + 
+        scale_fill_manual(values=c_sample_col) +
+        scale_colour_manual(values=c_sample_col)  
+  }
+}
+    
+print(p)
+```
+```{r TwoPCAHVG, fig.height=8, fig.width=6}
+#PC 1v2
+df_out <- as.data.frame(pcaPRComp$x)
+df_out$group <- sapply( strsplit(as.character(row.names(df)), "_"), "[[", 1 )
+Samples=as.factor(colData(cdScFiltAnnot)$Sample)
+pp12<-ggplot(df_out,aes(x=PC1,y=PC2,color=Samples ))
+pp12<-pp12+geom_point()+ 
+        scale_colour_manual(values=c_sample_col)+
+    xlab(paste0("PC1: ",round(pca_var_percent_first10[1],1),"% variance")) +
+    ylab(paste0("PC2: ",round(pca_var_percent_first10[2],1),"% variance")) + theme_classic()
+#pca_var_percent_first10[1] <- 100 * pca_var[1:nmax] / sum(pca_var[1:nmax])
+
+#PC 3v4
+df_out <- as.data.frame(pcaPRComp$x)
+df_out$group <- sapply( strsplit(as.character(row.names(df)), "_"), "[[", 1 )
+Samples=as.factor(colData(cdScFiltAnnot)$Sample)
+pp34<-ggplot(df_out,aes(x=PC3,y=PC4,color=Samples ))
+pp34<-pp34+geom_point()+ 
+        scale_colour_manual(values=c_sample_col)+
+    xlab(paste0("PC3: ",round(pca_var_percent_first10[3],1),"% variance")) +
+    ylab(paste0("PC4: ",round(pca_var_percent_first10[4],1),"% variance")) + theme_classic()
+
+multiplot(pp12,pp34, cols=1)
+```
+
+
+
+### t-SNE plot with only the HVG genes:
+We first calculate how much of variance each PC is giving
+
+```{r}
+plot(c(1:20), pca_var_percent[1:20])
+```
+
+```{r}
+ pca_var_percent[1:20]
+```
+
+<font color=red>__Note t-SNE calculated next. Everytime you run this step the t-SNE plot will look different.__</font>
+
+
+```{r}
+tsne_out <- Rtsne(as.matrix(pcaPRComp$x[,1:10]),check_duplicates = FALSE, pca = FALSE,
+             perplexity=30, theta=0.01, dims=2, num_threads = 8)
+
+Rep <- as.factor(colData(cdScFiltAnnot)$Sample)
+
+
+counts <- colData(cdScFiltAnnot)$total_counts
+```
+
+
+```{r figTsneM3DropGenes, fig.height=5, fig.width=6}
+p <- ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, color=counts)) +
+     geom_point(size=0.75) +
+     guides(colour = guide_legend(override.aes = list(size=0.5))) +
+     xlab("") + ylab("") +
+     ggtitle("t-SNE 2D Embedding of Sample Data") +
+     theme_classic(base_size=14) +
+     theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank())
+
+p2 <- ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, color=Rep)) +
+     geom_point(size=0.75) +
+     guides(colour = guide_legend(override.aes = list(size=0.8))) +
+     xlab("") + ylab("") +
+     ggtitle("t-SNE 2D Embedding of Expression Data") +
+     theme_classic(base_size=10) +
+     theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank()) +
+          scale_fill_manual(values=c_sample_col) +
+         scale_colour_manual(values=c_sample_col)
+p2
+
+#multiplot(p,p2,cols=2)
+```
+```{r}
+reducedDim(cdScFiltAnnot,'tSNE') <- tsne_out$Y
+```
+
+
+
+### Running UMAP for data visualization
+```{r}
+embedding <- umap(pcaPRComp$x[,1:10])
+as.tibble(embedding$layout) %>%
+  mutate(Samples = colData(cdScFiltAnnot)$Sample) %>%
+  ggplot(aes(V1, V2, color=Samples)) +  geom_point(size=0.75) + theme_classic() +scale_colour_manual(values=c_sample_col)
+```
+```{r}
+reducedDim(cdScFiltAnnot,'UMAP') <- embedding$layout
+```
+
+
+```{r}
+save.image()
+```
+
+# 9. Clustering cells
+The goal is to split the cells in the dataset into clusters, such that:
+1. the cells in the same cluster are as similar as possible,
+2. the cells in different clusters are highly distinct
+
+There are numerous methods of clustering; dynamic-cut-tree, k-means, k-medoids, GMM, GP-LVM and so on. Here the dynamic-cut-tree will be used.
+
+### Dynamic Cut Tree Description
+Hierarchical clustering is a widely used method for detecting clusters in genomic data. Clusters are defined by cutting branches off the dendrogram. A common but inflexible method uses a constant height cutoff value; this method exhibits suboptimal performance on complicated dendrograms. The Dynamic Tree Cut R library implements novel dynamic branch cutting methods for detecting clusters in a dendrogram depending on their shape. Compared to the constant height cutoff method, these techniques offer the following advantages: (1) they are capable of identifying nested clusters; (2) they are flexible --- cluster shape parameters can be tuned to suit the application at hand; (3) they are suitable for automation; and (4) they can optionally combine the advantages of hierarchical clustering and partitioning around medoids, giving better detection of outliers.
+
+### Clustering cells into putative subpopulations
+Hierarchical clustering is performed on the Euclidean distances between cells, using Ward’s criterion to minimize the total variance within each cluster. This yields a dendrogram that groups together cells with similar expression patterns across the chosen genes. 
+
+Clusters are explicitly defined by applying a dynamic tree cut (Langfelder et al., 2008)[https://academic.oup.com/bioinformatics/article/24/5/719/200751] to the dendrogram. This exploits the shape of the branches in the dendrogram to refine the cluster definitions, and is more appropriate than cutree for complex dendrograms. Greater control of the empirical clusters can be obtained by manually specifying cutHeight in cutreeDynamic.
+
+An alternative approach is to cluster on a matrix of distances derived from correlations (e.g., as in `quickCluster`). This is more robust to noise and normalization errors, but is also less sensitive to subtle changes in the expression profiles.
+
+```{r}
+chosen.exprs <- logcounts(cdScFiltAnnot[rownames(hvg.out),])
+my.dist <- dist(t(chosen.exprs))
+my.tree <- hclust(my.dist, method = "ward.D2")
+my.clusters <- unname(cutreeDynamic(my.tree, distM=as.matrix(my.dist), verbose=0))
+print(paste0('Number of clusters'))
+levels(as.factor(my.clusters))
+```
+
+```{r}
+cdScFiltAnnot$Clusters <- as.factor(my.clusters)
+```
+
+Drawing the heatmap, first scale te: 
+```{r figHeatClust, fig.height=12, fig.width=8}
+heat.vals <- chosen.exprs - rowMeans(chosen.exprs)
+
+#clust.col <- rainbow(max(my.clusters))
+#heatmap.2(heat.vals, col=bluered, symbreak=TRUE, trace='none', cexRow=0.3,
+#    ColSideColors=clust.col[my.clusters], Colv=as.dendrogram(my.tree))
+
+df = data.frame(Class = as.factor(my.clusters))
+ha = HeatmapAnnotation(df = df)
+#ha = HeatmapAnnotation(df = df, col = list(Condition = c("MC_A" =  "dodgerblue", "MC_B"= "firebrick", "MC_C"="forestgreen", "MC_D"="gold")))
+Heatmap(heat.vals , top_annotation = ha, show_column_names=FALSE, cluster_rows = TRUE, clustering_method_columns = "ward.D2", row_names_gp = gpar(fontsize = 8))
+```
+
+Saving the heatmap for later exploration:
+```{r}
+pdf("heatmap.pdf", width=20, height=40)
+Heatmap(heat.vals , top_annotation = ha, show_column_names=FALSE, cluster_rows = TRUE, clustering_method_columns = "ward.D2", row_names_gp = gpar(fontsize = 8))
+dev.off()
+```
+
+t-SNE with cluster allocation:
+```{r figtsneClusterAlloc, fig.height=5, fig.width=6}
+## t-SNE with cluster allocation
+Clusters <- as.factor(my.clusters)
+
+p1 <- ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, color=Clusters)) +
+     geom_point(size=1.0) +
+     guides(colour = guide_legend(override.aes = list(size=1))) +
+     xlab("") + ylab("") +
+     ggtitle("t-SNE 2D coloured by clusters") +
+     theme_classic(base_size=10) +
+     theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank()) + scale_color_manual(values=c_clust_col)
+p1
+
+#multiplot(p,p2,cols=2)
+```
+
+
+```{r figtsneCell-cycleAlloc, fig.height=5, fig.width=6}
+## t-SNE with Cell-cycle
+CellCycle <- as.factor(cdScFiltAnnot$CellCycle)
+
+p2 <- ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, color=CellCycle)) +
+     geom_point(size=1.0) +
+     guides(colour = guide_legend(override.aes = list(size=1))) +
+     xlab("") + ylab("") +
+     ggtitle("t-SNE 2D coloured by cell-cycle") +
+     theme_classic(base_size=10) +
+     theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank()) 
+p2
+#multiplot(p,p2,cols=2)
+```
+
+```{r figtsneSampleAgainAlloc, fig.height=5, fig.width=6}
+## t-SNE with Sample
+Sample <- as.factor(cdScFiltAnnot$Sample)
+
+p3 <- ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, color=Sample)) +
+     geom_point(size=1.0) +
+     guides(colour = guide_legend(override.aes = list(size=1))) +
+     xlab("") + ylab("") +
+     ggtitle("t-SNE 2D coloured by sample") +
+     theme_classic(base_size=10) +
+     theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank()) 
+p3
+```
+
+
+```{r figtsneReadCountAlloc, fig.height=5, fig.width=6}
+## t-SNE Clustering impacted with read-counts
+p4 <- as.tibble(as.data.frame(tsne_out$Y)) %>%
+  mutate(ReadDepth = cdScFiltAnnot$log10_total_counts) %>%
+  ggplot(aes(V1, V2, color=ReadDepth)) +  geom_point(size=0.75) + theme_classic() +
+  scale_colour_gradientn(colours = rainbow(5)) + 
+  theme(strip.background = element_blank(),
+           strip.text.x     = element_blank(),
+           axis.text.x      = element_blank(),
+           axis.text.y      = element_blank(),
+           axis.ticks       = element_blank(),
+           axis.line        = element_blank(),
+           panel.border     = element_blank()) 
+p4
+```
+```{r figtsneAlltAlloc, fig.height=8, fig.width=8}
+multiplot(p1,p2,p3,p4, cols=2)
+```
+
+
+```{r}
+Clusters <- as.factor(my.clusters)
+as.tibble(embedding$layout) %>%
+  mutate(Clusters = Clusters) %>%
+  ggplot(aes(V1, V2, color=Clusters)) +  geom_point(size=0.75) + theme_classic() + scale_color_manual(values=c_clust_col)
+```
+```{r}
+as.tibble(embedding$layout) %>%
+  mutate(Samples = colData(cdScFiltAnnot)$Sample) %>%
+  ggplot(aes(V1, V2, color=Samples)) +  geom_point(size=0.75) + theme_classic() + scale_color_manual(values=c_clust_col)
+```
+
+## Silhouette cluster validation plot
+The silhouette plot displays a measure of how close each point in one cluster is to points in the neighboring clusters.
+Silhouette width can be interpreted as follows:
+- Cells with a large Si (almost 1) are very well clustered.
+- A small Si (around 0) means that the observation lies between two clusters.
+- Cells with a negative Si are probably placed in the wrong cluster. (so cluster is less stable and trustworthy)
+
+
+### Background to cluster validation
+### Internal measures for cluster validation
+
+In this section, we describe the most widely used clustering validation indices. Recall that the goal of partitioning clustering algorithms (Part @ref(partitioning-clustering)) is to split the data set into clusters of objects, such that:
+
+- the objects in the same cluster are as similar as possible,
+- and the objects in different clusters are highly distinct
+(http://www.sthda.com/english/wiki/print.php?id=241)
+(https://www.datanovia.com/en/lessons/cluster-validation-statistics-must-know-methods/)
+(http://www.sthda.com/english/wiki/print.php?id=243)
+
+
+* That is, we want the average distance within cluster to be as small as possible; and the average distance between clusters to be as large as possible.
+
+Internal validation measures often reflect the compactness, the connectedness and the separation of the cluster partitions.
+
+1. Compactness or cluster cohesion: Measures how close are the objects within the same cluster. A lower within-cluster variation is an indicator of a good compactness (i.e., a good clustering). The different indices for evaluating the compactness of clusters are base on distance measures such as the cluster-wise within average/median distances between observations.
+2. Separation: Measures how well-separated a cluster is from other clusters. The indices used as separation measures include:
+    * distances between cluster centers
+    * the pairwise minimum distances between objects in different clusters
+3. Connectivity: corresponds to what extent items are placed in the same cluster as their nearest neighbors in the data space. The connectivity has a value between 0 and infinity and should be minimized.
+
+Generally most of the indices used for internal clustering validation combine compactness and separation measures as follow:
+
+$Index = \frac{\alpha * Seperation}{\beta * Compactness}$
+where $\alpha$ and $\beta$ are weights.
+
+### Silhouette coefficient
+
+The silhouette analysis measures how well an observation is clustered and it estimates the average distance between clusters. The silhouette plot displays a measure of how close each point in one cluster is to points in the neighboring clusters.
+
+For each observation $i$, the silhouette width $s_i$ is calculated as follows:
+
+1. For each observation $i$, calculate the average dissimalirty $\alpha_i$ between $i$ and all other points of the cluster which $i$ belongs.
+2. For all other clusters $C$, to which $i$ does not belong, calculate the average dissimilarity $d(i,C)$ of $i$ to all observations of $C$. The smallest of these $d(i,C)$ is defined as $b_i = min_C d(i,C)$. The value of $b_i$ can be seen as the dissimilarity between i and its __neighbor__ cluster, i.e. the nearest one to which it does not belong.
+3. Finally the silhouette width of the observation $i$ is defined by the formula: $S_i = \frac{(b_i - a_i)}{max(a_i,b_i)}$
+
+Silhouette width can be interpreted as follow:
+
+- Observations with a large Si (almost 1) are very well clustered.
+- A small Si (around 0) means that the observation lies between two clusters.
+- Observations with a negative Si are probably placed in the wrong cluster.
+
+
+```{r}
+#my.clusters <- unname(cutreeDynamic(my.tree, distM=as.matrix(my.dist), verbose=0))
+fviz_silhouette(silhouette(my.clusters, my.dist), print.summary = FALSE)
+```
+
+
+It looks like that the stability of cluster 5 is quite low. Something to keep in mind.
+
+Now, how does the `TP53` and `XIST` expression looks like
+```{r}
+GeneExp <- logcounts(cdScFiltAnnot)['XIST',]
+    #GeneName = 'SPN'
+    df <- as.data.frame(tsne_out$Y)
+    df[,'GeneExp']=logcounts(cdScFiltAnnot)['XIST',]
+p1<-     ggplot(df, aes(x=V1, y=V2, GeneExp = GeneExp)) +
+      geom_point(size=1.00,aes(colour = GeneExp), alpha=0.8) +
+      #scale_colour_viridis_c()+
+      scale_colour_gradient(low = "gray88", high = "red")+
+      #guides(colour = guide_legend(override.aes = list(size=4))) +
+      xlab("") + ylab("") +
+      ggtitle(paste0('Gene Exp:','XIST'))+
+      theme_classic(base_size=14) +
+      theme(strip.background = element_blank(),
+            strip.text.x     = element_blank(),
+            axis.text.x      = element_blank(),
+            axis.text.y      = element_blank(),
+            axis.ticks       = element_blank(),
+            axis.line        = element_blank(),
+            panel.border     = element_blank())
+p1
+```
+
+```{r}
+GeneExp <- logcounts(cdScFiltAnnot)['XIST',]
+    #GeneName = 'SPN'
+    df <- as.data.frame(tsne_out$Y)
+    df[,'GeneExp']=logcounts(cdScFiltAnnot)['XIST',]
+p1<-     ggplot(df, aes(x=V1, y=V2, GeneExp = GeneExp)) +
+      geom_point(size=1.00,aes(colour = GeneExp), alpha=0.8) +
+      #scale_colour_viridis_c()+
+      scale_colour_gradientn(colours = hcl.colors(n=4, palette = 'RdYlBu'))+
+      #guides(colour = guide_legend(override.aes = list(size=4))) +
+      xlab("") + ylab("") +
+      ggtitle(paste0('Gene Exp:','XIST'))+
+      theme_classic(base_size=14) +
+      theme(strip.background = element_blank(),
+            strip.text.x     = element_blank(),
+            axis.text.x      = element_blank(),
+            axis.text.y      = element_blank(),
+            axis.ticks       = element_blank(),
+            axis.line        = element_blank(),
+            panel.border     = element_blank())
+p1
+```
+
+```{r}
+GeneExp <- logcounts(cdScFiltAnnot)['XIST',]
+    #GeneName = 'SPN'
+    df <- as.data.frame(tsne_out$Y)
+    df[,'GeneExp']=logcounts(cdScFiltAnnot)['XIST',]
+p1<-     ggplot(df, aes(x=V1, y=V2, GeneExp = GeneExp)) +
+      geom_point(size=1.00,aes(colour = GeneExp), alpha=0.8) +
+  scale_colour_viridis_c()+
+      #scale_colour_gradient(low = "gray88", high = "purple4")+
+      #guides(colour = guide_legend(override.aes = list(size=4))) +
+      xlab("") + ylab("") +
+      ggtitle(paste0('Gene Exp:','XIST'))+
+      theme_classic(base_size=14) +
+      theme(strip.background = element_blank(),
+            strip.text.x     = element_blank(),
+            axis.text.x      = element_blank(),
+            axis.text.y      = element_blank(),
+            axis.ticks       = element_blank(),
+            axis.line        = element_blank(),
+            panel.border     = element_blank())
+p1
+```
+
+```{r}
+GeneExp <- logcounts(cdScFiltAnnot)['TP53',]
+    #GeneName = 'SPN'
+    df <- as.data.frame(tsne_out$Y)
+    df[,'GeneExp']=logcounts(cdScFiltAnnot)['TP53',]
+  p2 <-  ggplot(df, aes(x=V1, y=V2, GeneExp = GeneExp)) +
+      geom_point(size=1.00,aes(colour = GeneExp), alpha=0.3) +
+      scale_colour_gradient(low = "gray88", high = "purple4")+
+      #guides(colour = guide_legend(override.aes = list(size=4))) +
+      xlab("") + ylab("") +
+      ggtitle(paste0('Gene Exp:','TP53'))+
+      theme_classic(base_size=14) +
+      theme(strip.background = element_blank(),
+            strip.text.x     = element_blank(),
+            axis.text.x      = element_blank(),
+            axis.text.y      = element_blank(),
+            axis.ticks       = element_blank(),
+            axis.line        = element_blank(),
+            panel.border     = element_blank())
+  p2
+```
+
+# Identifying marker genes
+
+Potential marker genes are identified by taking the top set of DE genes from each pairwise comparison between clusters. We arrange the results into a single output table that allows a marker set to be easily defined for a user-specified size of the top set. For example, to construct a marker set from the top 10 genes of each comparison, one would filter `marker.set` to retain rows with Top less than or equal to 10.
+
+We save the list of candidate marker genes for further examination. We also examine their expression profiles to verify that the DE signature is robust. The heatmap figure below indicates that most of the top markers have strong and consistent up- or downregulation in cells of cluster 1 compared to some or all of the other clusters. Thus, cells from the subpopulation of interest can be identified as those that express the upregulated markers and do not express the downregulated markers.
+
+
+
+```{r}
+cluster <- factor(my.clusters)
+de.design <- model.matrix(~0 + cluster)
+y <- convertTo(cdScFiltAnnot, type="edgeR")
+y <- estimateDisp(y, de.design)
+fit <- glmFit(y, de.design)
+summary(y$tagwise.dispersion)
+```
+```{r}
+clust.col <- rainbow(max(my.clusters))
+```
+
+```{r}
+clusterNumber <- max(my.clusters)
+pairwiseComparisonNumber <- choose(clusterNumber,2)
+compClusters <- length(levels(as.factor(my.clusters)))-1
+endClusters <- (3+length(levels(as.factor(my.clusters)))-2)
+```
+
+```{r}
+## setup parallel backend to use many processors
+# cores=detectCores()
+# cl <- makeCluster(12) #Have choosen 12 cores here
+# registerDoParallel(cl)
+```
+
+```{r}
+result.logFC <- result.FDR <- list()
+
+
+#foreach(i=c(1:(clusterNumber))) %dopar% {
+for(i in c(1:(clusterNumber))){
+  for(j in c(1:clusterNumber))
+  {
+    if(i == j){ next }
+    print(paste0('In ',i,", in ",j))
+    contrast <- numeric(ncol(de.design))
+    contrast[i] <- 1
+    contrast[j] <- -1
+    fit <- edgeR::glmQLFit(y, de.design)
+    res <- edgeR::glmQLFTest(fit, contrast = contrast)
+    top.tags <- edgeR::topTags(res, n=length(y$design), sort.by="none")
+    
+    #assign(paste0("UPGenes_",i,"_",j), rownames(topTags$table[topTags$table$FDR < 0.05 & topTags$table$logFC > 1,]))
+    #assign(paste0("UPGenes_",j,"_",i), rownames(topTags$table[topTags$table$FDR < 0.05 & topTags$table$logFC < -1,]))
+    #UPgenes <- rownames(topTags$table[topTags$table$FDR < 0.05 & topTags$table$logFC > 1,])
+    #Downgenes <- rownames(topTags$table[topTags$table$FDR < 0.05 & topTags$table$logFC < -1,])
+    
+    con.name <- paste0('vs.', levels(cluster)[j])
+    result.logFC[[con.name]] <- top.tags$table$logFC
+    #names(result1.logFC[[con.name]]) <- rownames(top.tags$table)
+    result.FDR[[con.name]] <- top.tags$table$FDR
+    #names(result1.FDR[[con.name]]) <- rownames(top.tags$table)
+    
+  }
+  
+  
+    collected.ranks <- lapply(result.FDR, rank, ties="first")
+    min.rank <- do.call(pmin, collected.ranks)
+
+    marker.set <- data.frame(Top=min.rank, Gene=rownames(top.tags),
+                              logFC=do.call(cbind, result.logFC), 
+                                FDR = result.FDR, stringsAsFactors=FALSE)
+    marker.set <- marker.set[order(marker.set$Top),]
+
+    marker.set.pos <- marker.set[rowSums(marker.set[,3:endClusters]>0)==compClusters,]
+    marker.set.pos <- marker.set.pos[order(marker.set.pos$Top),]
+
+    write.table(marker.set, file=paste0("SC_workshop_Cluster",i,".tsv"), sep="\t", quote=FALSE, col.names=NA)
+    write.table(marker.set.pos, file=paste0("SC_workshop_Cluster",i,"_pos.tsv"), sep="\t", quote=FALSE, col.names=NA)
+}
+
+```
+
+```{r}
+save.image()
+```
+
+# References
+1. [Lun ATL, McCarthy DJ and Marioni JC. A step-by-step workflow for low-level analysis of single-cell RNA-seq data with Bioconductor. F1000Research 2016, 5:2122](https://doi.org/10.12688/f1000research.9501.2) 
+2. [Malte D Luecke, Fabian J Theis, Current best practices in single‐cell RNA‐seq analysis: a tutorial, Mol Syst Biol. (2019) 15: e8746](https://doi.org/10.15252/msb.20188746)
+3. [Arron Lun, Aaron's single-cell thoughts](https://ltla.github.io/SingleCellThoughts/)
+
+
